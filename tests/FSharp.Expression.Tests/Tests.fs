@@ -7,22 +7,11 @@ open FsCheck
 open System
 open System.Collections.Generic
 
-let tokenize expression =
+let tokenize expression = 
     System.Text.RegularExpressions.Regex.Split(expression, "(AND|OR|\(|\))")
     |> Array.map (fun s -> s.Trim())
     |> Array.filter (fun s -> s <> "")
     |> List.ofArray
-
-let tokenize' (expression : string) =
-    let leftParans = expression.ToCharArray() |> Array.filter ((=) '(')
-    let rightParans = expression.ToCharArray() |> Array.filter ((=) ')')
-    if leftParans.Length <> rightParans.Length then None
-    else 
-        System.Text.RegularExpressions.Regex.Split(expression, "(AND|OR|\(|\))")
-        |> Array.map (fun s -> s.Trim())
-        |> Array.filter (fun s -> s <> "")
-        |> List.ofArray
-        |> Some
 
 [<Theory>]
 [<InlineData("1 = 1 AND 2 != 1", 3)>]
@@ -100,17 +89,21 @@ let evalLogic3 left operator right =
     |> string
 
 let evalLogical'' (expression : string list) = 
+    let evaluation temp = 
+        match temp with
+        | left :: operator :: right :: [] -> 
+            let withoutLogicalExpression = skipLast 3 temp
+            let evaluatedExpression = [ evalLogic3 left operator right ]
+            withoutLogicalExpression @ evaluatedExpression
+        | _ -> temp
+    
     let rec loop index result = 
         match result with
         | x when index = List.length expression -> List.head result |> evalBool
         | _ -> 
             let temp = result @ [ expression.Item index ]
-            
-            let evaluation = 
-                match temp with
-                | left :: operator :: right :: [] -> skipLast 3 temp @ [ evalLogic3 left operator right ]
-                | _ -> temp
-            loop (index + 1) evaluation
+            loop (index + 1) (evaluation temp)
+    
     loop 0 []
 
 [<Theory>]
@@ -126,9 +119,9 @@ let ``Evaluate logical expression`` (expression : string, expected) =
     Some expected =! actual
 
 let evalEqual (expression : string) = 
-    let left, right = 
-        expression.Split([| ' ' |], StringSplitOptions.RemoveEmptyEntries) 
-        |> fun tokens -> (tokens |> Array.head, tokens |> Array.last)
+    let tupleSides a = (Array.head a, Array.last a)
+    let removeEmpties = StringSplitOptions.RemoveEmptyEntries
+    let left, right = expression.Split([| ' ' |], removeEmpties) |> tupleSides
     
     let sign = 
         match expression with
@@ -171,22 +164,48 @@ let evalExp expression =
     |> List.ofArray
     |> evalLogical
 
-let evalExp' expression =
+let evalInParanthesises result = 
+    let inside = List.takeWhile ((<>) "(") result
+    let outside = List.rev result |> List.take (result.Length - inside.Length - 1)
+    
+    let evalInside = 
+        evalLogical'' inside
+        |> Option.get
+        |> string
+    List.append outside [ evalInside ]
+
+let evalExp' expression = 
     let tokens = tokenize expression
-    let evalInParanthesises result = 
-        let inside = List.takeWhile ((<>) "(") result
-        let outside = List.rev result |> List.take (result.Length - inside.Length - 1)
-        List.append outside [ evalLogical'' inside |> Option.get |> string ]
-    let rec evalToken index (result : string list) : string list =
-        if index = tokens.Length 
-        then result
+    
+    let rec evalToken index (result : string list) : string list = 
+        if index = tokens.Length then result
         else 
-            let result =
+            let result = 
                 match tokens.Item index with
                 | ")" -> evalInParanthesises result
                 | t when t.Contains "=" -> evalEqual t :: result
                 | t -> t :: result
             evalToken (index + 1) result
+    evalToken 0 [] |> evalLogical''
+
+let (|Contains|_|) (input : string) x = 
+    if input.Contains x then Some input
+    else None
+
+let evalExp'' expression = 
+    let tokens = tokenize expression
+    
+    let evaluation index result = 
+        match List.item index tokens with
+        | ")" -> evalInParanthesises result
+        | t when t.Contains "=" -> evalEqual t :: result
+        | t -> t :: result
+    
+    let rec evalToken index result = 
+        match tokens with
+        | _ when List.length tokens = index -> result
+        | _ -> evalToken (index + 1) (evaluation index result)
+    
     evalToken 0 [] |> evalLogical''
 
 [<Theory>]
@@ -196,24 +215,11 @@ let evalExp' expression =
 [<InlineData("(1 = 1 AND 3 != 4) AND (3 = 1 OR 2 = 6)", false)>]
 [<InlineData("(11 != 11 OR (22 = 22 AND 33 = 33) AND 22 != 22) OR 44 = 44", true)>]
 let ``Evalute complete expression`` expression expected = 
-    let actual = evalExp' expression
+    let actual = evalExp'' expression
     Some expected =! actual
 
 [<Theory>]
 [<InlineData("1 !! = 0")>]
-let ``Evaluate None expression`` expression =
+let ``Evaluate None expression`` expression = 
     let actual = evalExp' expression
     None =! actual
-
-[<Fact>]
-let ``Evaluate paranthesis``() = 
-    let test = "3 != 4 OR (1 = 1 AND 2 = 2"
-    let tokens = tokenize test
-    
-    let inside = 
-        tokens
-        |> Seq.rev
-        |> Seq.takeWhile ((<>) "(")
-    
-    let outside = tokens |> Seq.take (Seq.length tokens - Seq.length inside - 1)
-    true
